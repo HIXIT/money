@@ -591,9 +591,9 @@ function lastBackupText(){let d=null;try{d=localStorage.getItem(KEY+":lastBackup
 function backupDue(){let d=null;try{d=localStorage.getItem(KEY+":lastBackup")}catch(e){}return TX.length>0&&(!d||daysAgo(d)>30)}
 function showConfirm(msg,okLabel,onOk){
   sheet.innerHTML=`<div class="grab"></div><div style="font-size:15px;margin:6px 0 18px">${msg}</div><div class="actions"><button class="btn ghost" id="cNo">Cancel</button><button class="btn pri" id="cYes" style="background:var(--exp)">${esc(okLabel)}</button></div>`;
-  scrim.classList.add("open");
-  document.getElementById("cNo").onclick=()=>scrim.classList.remove("open");
-  document.getElementById("cYes").onclick=()=>{scrim.classList.remove("open");try{onOk()}catch(e){handleErr(e)}};
+  sheetOpen();
+  document.getElementById("cNo").onclick=()=>sheetClose();
+  document.getElementById("cYes").onclick=()=>{sheetClose();try{onOk()}catch(e){handleErr(e)}};
 }
 
 /* ---------- form ---------- */
@@ -602,7 +602,7 @@ function openForm(tx){
   if(readOnly){toast("This view is read-only");return}
   delArmed=false;
   form=tx?Object.assign({},tx,{amountStr:nf2.format(tx.amount).replace(/,00$/,"")}):{type:"expense",category:"",desc:"",amountStr:"",account:SET.accounts[0]||"",date:defaultDate(),note:""};
-  drawForm();scrim.classList.add("open");
+  drawForm();sheetOpen();
   if(!tx)setTimeout(()=>{const a=document.getElementById("fAmt");a&&a.focus()},80);
 }
 function defaultDate(){return S.month===ym(new Date())?todayStr():S.month+"-01"}
@@ -650,8 +650,8 @@ function drawForm(){
   document.getElementById("fDesc").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();sync();saveTx()}};
 }
 function val(id){const e=document.getElementById(id);return e?e.value:""}
-function closeForm(){scrim.classList.remove("open");form=null}
-scrim.addEventListener("click",e=>{if(e.target===scrim){closeForm();pform=null}});
+function closeForm(){sheetClose()}
+scrim.addEventListener("click",e=>{if(e.target===scrim)sheetClose()});
 async function saveTx(){
   const f=form, amt=parseAmt(f.amountStr);
   if(!(amt>0)){toast("Enter an amount above zero");document.getElementById("fAmt").focus();return}
@@ -783,7 +783,7 @@ function openPosForm(p){
   const s=v=>v==null||v===""?"":String(v).replace(".",",");
   pform=p?{id:p.id,asset:p.asset,currency:p.currency||"USD",qty:s(p.qty),buyPrice:s(p.buyPrice),buyDate:p.buyDate||"",buyFx:s(p.buyFx),curPrice:s(p.curPrice),priceDate:p.priceDate||"",note:p.note||"",createdAt:p.createdAt,logCash:false,sellQty:"",sellPrice:s(p.curPrice),sellFx:s(fxNow(p.currency==="TL"?"TL":p.currency)),sellLog:true}
           :{asset:"",currency:"USD",qty:"",buyPrice:"",buyDate:todayStr(),buyFx:s(FX.USD),curPrice:"",note:"",logCash:true};
-  drawPosForm();scrim.classList.add("open");
+  drawPosForm();sheetOpen();
 }
 function drawPosForm(){
   const f=pform, foreign=f.currency!=="TL";
@@ -822,7 +822,7 @@ function drawPosForm(){
     del.disabled=true;try{await db.collection("pos").doc(f.id).delete();closePos();toast("Holding deleted")}catch(e){handleErr(e);del.disabled=false}
   };
 }
-function closePos(){scrim.classList.remove("open");pform=null}
+function closePos(){sheetClose()}
 function posBody(f){
   const n=x=>{const v=parseAmt(x);return v>0?v:null};
   const cp=n(f.curPrice), old=f.id?POS.find(p=>p.id===f.id):null;
@@ -862,8 +862,30 @@ async function recordSale(){
   }catch(e){handleErr(e);btn.disabled=false}
 }
 
+
+/* ---------- Android back button: sheet -> tab -> home -> "press again to exit" ---------- */
+let navDepth=0, popPending=0, skipPop=0, exitTimer=0;
+function pushNav(tag){history.pushState({tag},"");navDepth++}
+function popNavSilently(){if(navDepth<=0)return;navDepth--;popPending++;if(popPending===1)queueMicrotask(()=>{const n=popPending;popPending=0;skipPop++;history.go(-n)})}
+function sheetIsOpen(){return scrim.classList.contains("open")}
+function sheetOpen(){if(!sheetIsOpen()){scrim.classList.add("open");pushNav("sheet")}}
+function sheetClose(fromPop){if(sheetIsOpen()){scrim.classList.remove("open");form=null;pform=null;if(!fromPop)popNavSilently()}}
+history.replaceState({tag:"base"},"");history.pushState({tag:"guard"},"");
+window.addEventListener("popstate",()=>{
+  if(skipPop){skipPop--;return}
+  if(sheetIsOpen()){navDepth=Math.max(0,navDepth-1);sheetClose(true);return}
+  if(S.view!=="home"){navDepth=Math.max(0,navDepth-1);planDraft=null;priceMode=false;S.view="home";window.scrollTo(0,0);render();return}
+  // on Home: the guard entry was used up; one more back leaves the app
+  navDepth=0;toast("Press back again to exit");clearTimeout(exitTimer);
+  exitTimer=setTimeout(()=>history.pushState({tag:"guard"},""),2000);
+});
+
 /* ---------- nav ---------- */
-function go(v){S.view=v;window.scrollTo(0,0);render()}
+function go(v){
+  if(v===S.view){window.scrollTo(0,0);render();return}
+  if(v==="home")popNavSilently();else if(S.view==="home")pushNav("view");
+  S.view=v;window.scrollTo(0,0);render();
+}
 document.querySelectorAll("nav.bot .tab").forEach(b=>b.onclick=()=>{if(b.dataset.v!=="plan")planDraft=null;priceMode=false;go(b.dataset.v)});
 document.getElementById("fab").onclick=()=>S.view==="invest"?openPosForm(null):openForm(null);
 document.getElementById("gearBtn").onclick=()=>go(S.view==="settings"?"home":"settings");
