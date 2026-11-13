@@ -349,7 +349,7 @@ function renderHome(){
   const cats=SET.expenseCats.slice();
   Object.keys(st.byCat).forEach(c=>{if(!cats.includes(c))cats.push(c)});
   const rows=cats.map(c=>({c,s:st.byCat[c]||0,b:+SET.budgets[c]||0})).filter(r=>r.s>0||r.b>0).sort((a,b)=>b.s-a.s);
-  if(!TX.length)h+=`<section class="card"><h2>Welcome</h2><div class="note" style="margin-bottom:10px">Starting fresh. If you have a backup file (like the one with your Excel data), restore it now.</div><button class="btn pri" id="welcomeRestore">Restore from backup file</button></section>`;
+  if(!TX.length)h+=`<section class="card"><h2>Welcome</h2><div class="note" style="margin-bottom:10px">Starting fresh. If you have a backup file (like the one with your Excel data), restore it now.</div><button class="btn pri" id="welcomeRestore">Restore from backup file</button><button class="btn ghost" id="welcomeExcel" style="width:100%;margin-top:8px">Import Excel file</button></section>`;
   h+=`<section class="card"><h2>Spending by category <small>${monthLabel(S.month)}</small></h2>`;
   if(!rows.length)h+=`<div class="empty">No expenses this month yet.<br>Tap + to add one.</div>`;
   rows.forEach(r=>{
@@ -381,6 +381,7 @@ function renderHome(){
   h+=`</section>`;
   main.innerHTML=h;
   const wr=document.getElementById("welcomeRestore");if(wr)wr.onclick=()=>{go("settings");setTimeout(()=>document.getElementById("bkFile").click(),50)};
+  const we=document.getElementById("welcomeExcel");if(we)we.onclick=()=>{go("settings");setTimeout(()=>document.getElementById("xlFile").click(),50)};
   const sa=document.getElementById("seeAll");if(sa)sa.onclick=e=>{e.preventDefault();go("list")};
   main.querySelectorAll("[data-person]").forEach(b=>b.onclick=()=>{S.q=b.dataset.person;S.ftype="all";S.allMonths=true;go("list")});
   bindTx();
@@ -541,6 +542,11 @@ function renderSettings(){
   <button class="btn pri" id="bkSave">Save backup file</button>
   <button class="btn ghost" id="bkLoad" style="width:100%;margin-top:8px">Restore from backup file…</button>
   <input type="file" id="bkFile" accept=".json,application/json" class="hide"></section>
+  <section class="card"><h2>Import from Excel</h2>
+  <div class="note" style="margin-bottom:10px">Pick your Gelir_Gider Excel file. Rows from İŞLEMLER and YATIRIM replace what was imported from Excel before. Entries you made in the app are kept, so importing the same file twice never duplicates anything.</div>
+  <button class="btn pri" id="xlPick">Import Excel file (.xlsx)</button>
+  <input type="file" id="xlFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hide">
+  ${(()=>{try{return localStorage.getItem(KEY+":beforeImport")}catch(e){return null}})()?`<button class="btn ghost" id="xlUndo" style="width:100%;margin-top:8px">Undo last import</button>`:""}</section>
   <section class="card"><h2>Export for Excel</h2><div class="note" style="margin-bottom:10px">Same columns as your İŞLEMLER sheet.</div>
   <button class="btn ghost" id="csvSave" style="width:100%">Download CSV (${TX.length} transactions)</button>
   <button class="btn ghost" id="copyAll" style="width:100%;margin-top:8px">Copy as table</button></section>
@@ -553,6 +559,9 @@ function renderSettings(){
     const ok=await saveFile(`money-backup-${todayStr()}.json`,JSON.stringify({app:"moneytracker",version:1,savedAt:new Date().toISOString(),data:LocalDB.exportAll()},null,1),"application/json");
     if(ok){try{localStorage.setItem(KEY+":lastBackup",todayStr())}catch(e){}setBanner("");renderSettings()}
   };
+  document.getElementById("xlPick").onclick=()=>document.getElementById("xlFile").click();
+  document.getElementById("xlFile").onchange=e=>{const f=e.target.files[0];e.target.value="";if(f)importExcelFile(f)};
+  const xu=document.getElementById("xlUndo");if(xu)xu.onclick=undoImport;
   document.getElementById("bkLoad").onclick=()=>document.getElementById("bkFile").click();
   document.getElementById("bkFile").onchange=async e=>{
     const f=e.target.files[0];if(!f)return;
@@ -594,6 +603,91 @@ function showConfirm(msg,okLabel,onOk){
   sheetOpen();
   document.getElementById("cNo").onclick=()=>sheetClose();
   document.getElementById("cYes").onclick=()=>{sheetClose();try{onOk()}catch(e){handleErr(e)}};
+}
+
+
+/* ---------- Excel import (merge: replaces only records that came from Excel) ---------- */
+function loadXLSX(){
+  if(window.XLSX)return Promise.resolve();
+  return new Promise((res,rej)=>{const sc=document.createElement("script");sc.src="xlsx.mini.min.js";sc.onload=()=>res();sc.onerror=()=>rej(new Error("Excel reader couldn't load. Open the app once with internet, then try again."));document.head.appendChild(sc)});
+}
+function xlDate(v){
+  if(v==null||v==="")return null;
+  if(typeof v==="number"&&isFinite(v)){const d=new Date(Date.UTC(1899,11,30)+Math.round(v*864e5));return d.toISOString().slice(0,10)}
+  const t=String(v).trim();let m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);if(m)return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+  m=t.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})/);if(m)return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+  return null;
+}
+function xlNum(v){if(typeof v==="number")return v;if(v==null||v==="")return NaN;return parseAmt(v)}
+function xlStr(v){return v==null?"":String(v).trim()}
+const XL_TYPES={"gider":"expense","gelir":"income","yatırıma aktarım":"invest_out","yatırımdan dönüş":"invest_in","borç verme":"lend_out","borç tahsilatı":"lend_in"};
+const XL_ACC={"NAKIT":"NAKİT","KREDI":"KREDİ"};
+function parseWorkbook(buf){
+  const wb=XLSX.read(buf,{type:"array"});
+  const find=n=>{const k=wb.SheetNames.find(x=>x.toLocaleUpperCase("tr")===n);return k?wb.Sheets[k]:null};
+  const out={tx:{},pos:{},fx:null,skipped:[],lent:0};
+  const ws=find("İŞLEMLER");
+  if(!ws)throw new Error("No İŞLEMLER sheet in this file");
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null,blankrows:true});
+  const h=rows.findIndex(r=>r&&xlStr(r[0])==="Tarih"&&/İşlem/i.test(xlStr(r[1])));
+  if(h<0)throw new Error("Couldn't find the header row (Tarih, İşlem türü, …)");
+  for(let i=h+1;i<rows.length;i++){
+    const r=rows[i]||[];const rowNo=i+1;
+    if(![0,1,2,3,4].some(c=>r[c]!=null&&r[c]!==""))continue;
+    const date=xlDate(r[0]),type=XL_TYPES[xlStr(r[1]).toLocaleLowerCase("tr")],cat=xlStr(r[2]),amt=xlNum(r[4]);
+    if(!date||!type||!cat||!(amt>0)){out.skipped.push(rowNo);continue}
+    let desc=xlStr(r[3]),note=xlStr(r[6]),acc=xlStr(r[5]);acc=XL_ACC[acc]||acc;
+    let t=type,c=cat;
+    if(type==="expense"&&note.toLocaleUpperCase("tr")==="BORÇ"){ // marked as a loan in Excel
+      t="lend_out";c="Borç";note=desc;desc=(desc.split(/\s+/)[0]||desc);out.lent++;
+    }
+    if(t.startsWith("invest"))c="Yatırım";
+    out.tx["tx/xl"+String(rowNo).padStart(4,"0")]={date,type:t,category:c,desc,amount:Math.round(amt*100)/100,account:acc,note,createdAt:Date.parse(date)||Date.now(),updatedAt:Date.now(),source:"excel"};
+  }
+  const wy=find("YATIRIM");
+  if(wy){
+    const yr=XLSX.utils.sheet_to_json(wy,{header:1,raw:true,defval:null,blankrows:true});
+    const fxv=a=>{const c=wy[a];const v=c?xlNum(c.v):NaN;return v>0?v:null};
+    out.fx={USD:fxv("K2"),EUR:fxv("M2"),GBP:fxv("O2"),date:todayStr()};
+    const hy=yr.findIndex(r=>r&&/Alış tarihi/i.test(xlStr(r[0])));
+    for(let i=(hy<0?5:hy)+1;i<yr.length;i++){
+      const r=yr[i]||[];if(!xlStr(r[1]))continue;
+      const cur=xlStr(r[2]).toUpperCase()||"TL",qty=xlNum(r[3]),bp=xlNum(r[4]);
+      if(!(qty>0)||!(bp>0)){out.skipped.push("YATIRIM "+(i+1));continue}
+      const bfx=xlNum(r[5]),cp=xlNum(r[6]);
+      out.pos["pos/xl"+String(i+1).padStart(3,"0")]={asset:xlStr(r[1]).toUpperCase(),currency:cur,qty,buyPrice:bp,buyDate:xlDate(r[0])||"",buyFx:cur!=="TL"&&bfx>0?bfx:null,curPrice:cp>0?cp:null,priceDate:cp>0?(xlDate(r[8])||""):"",note:"",createdAt:Date.now(),updatedAt:Date.now(),source:"excel"};
+    }
+  }
+  return out;
+}
+function isExcelDoc(k,v){return (k.startsWith("tx/")||k.startsWith("pos/"))&&(k.startsWith("tx/xl")||k.startsWith("pos/xl")||(v&&v.source==="excel"))}
+async function importExcelFile(file){
+  try{
+    toast("Reading Excel…");await loadXLSX();
+    const res=parseWorkbook(await file.arrayBuffer());
+    const cur=LocalDB.exportAll();
+    const oldX=Object.keys(cur).filter(k=>isExcelDoc(k,cur[k]));
+    const keep=Object.keys(cur).filter(k=>(k.startsWith("tx/")||k.startsWith("pos/"))&&!isExcelDoc(k,cur[k]));
+    const nT=Object.keys(res.tx).length,nP=Object.keys(res.pos).length;
+    if(!nT&&!nP)throw new Error("No rows found in the file");
+    const msg=`<b>${nT}</b> transactions and <b>${nP}</b> holdings from Excel will replace the ${oldX.length} records that came from Excel before.<br><br>
+      <b>${keep.length}</b> record${keep.length===1?"":"s"} you entered in the app ${keep.length===1?"stays":"stay"} untouched.
+      ${res.lent?`<br><br>${res.lent} row${res.lent>1?"s":""} with note "BORÇ" will be recorded as <b>Lent</b>, not as spending.`:""}
+      ${res.skipped.length?`<br><br>Skipped (incomplete): row ${res.skipped.slice(0,8).join(", ")}${res.skipped.length>8?"…":""}`:""}
+      ${res.fx&&res.fx.USD?`<br><br>USD/TL rate → ${String(res.fx.USD).replace(".",",")}`:""}`;
+    showConfirm(msg,"Import",()=>{
+      try{localStorage.setItem(KEY+":beforeImport",JSON.stringify(cur))}catch(e){}
+      const next={};Object.keys(cur).forEach(k=>{if(!isExcelDoc(k,cur[k]))next[k]=cur[k]});
+      Object.assign(next,res.tx,res.pos);
+      if(res.fx&&(res.fx.USD||res.fx.EUR||res.fx.GBP))next["settings/fx"]=res.fx;
+      LocalDB.replaceAll(next);toast(`Imported ${nT} transactions, ${nP} holdings`);go("home");
+    });
+  }catch(e){toast("Import failed: "+(e.message||e))}
+}
+function undoImport(){
+  let snap=null;try{snap=localStorage.getItem(KEY+":beforeImport")}catch(e){}
+  if(!snap){toast("Nothing to undo");return}
+  showConfirm("Undo the last Excel import and go back to how things were right before it?","Undo import",()=>{LocalDB.replaceAll(JSON.parse(snap));try{localStorage.removeItem(KEY+":beforeImport")}catch(e){}toast("Import undone");go("home")});
 }
 
 /* ---------- form ---------- */
