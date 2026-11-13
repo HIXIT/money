@@ -409,7 +409,7 @@ function txRow(t){
   const initial=(t.category||"?").trim().charAt(0).toUpperCase();
   return `<button class="tx" data-id="${esc(t.id)}"><span class="ic" style="background:${col}">${esc(initial)}</span>
     <span class="mid"><div class="d">${esc(t.desc||t.category)}</div><div class="s">${esc(t.category)}${t.account?" · "+esc(t.account):""}${t.type.startsWith("invest")||t.type.startsWith("lend")?" · "+T.label:""}</div></span>
-    <span class="amt num ${T.cls}">${T.sign>0?"+":"−"}${tl(t.amount,true)}</span></button>`;
+    <span class="amt num ${T.cls}" style="text-align:right">${T.sign>0?"+":"−"}${tl(t.amount,true)}${t.origCur?`<div style="font-size:11.5px;font-weight:500;color:var(--mut)">${CUR_SYM2[t.origCur]||""}${nf2.format(t.origAmount).replace(/,00$/,"")} @ ${nf2.format(t.fxRate)}</div>`:""}</span></button>`;
 }
 function bindTx(){main.querySelectorAll(".tx").forEach(b=>b.onclick=()=>openForm(TX.find(t=>t.id===b.dataset.id)))}
 
@@ -521,6 +521,15 @@ function renderTrends(){
     <div class="kv num"><span>Invested (net)</span><span class="invc">${tl(tV)}</span></div>
     <div class="kv num"><span>Lent out (net)</span><span class="lendc">${tl(months.reduce((a,m)=>{const s=monthStats(m);return a+s.lo-s.li},0))}</span></div>
     <div class="kv tot num"><span>Savings rate</span><span>${tI?((tI-tE)/tI*100).toFixed(0)+"%":"–"}</span></div></section>`;
+  // income measured in USD (only income entered in USD)
+  const usdM=months.map(m=>{const l=TX.filter(t=>t.type==="income"&&inMonth(t,m));const u=l.filter(t=>t.origCur==="USD");return {m,usd:u.reduce((a,t)=>a+t.origAmount,0),tlUsd:u.reduce((a,t)=>a+t.amount,0),other:l.length-u.length}}).filter(x=>x.usd>0);
+  if(usdM.length){
+    const mx=Math.max(...usdM.map(x=>x.usd));
+    h+=`<section class="card"><h2>Income in USD <small>entries made in USD</small></h2>${usdM.map(x=>`<div class="catrow"><div class="t"><span class="n">${monthLabel(x.m)}</span><span class="a num"><b>$${nf.format(x.usd)}</b> · ${tl(x.tlUsd)}${x.other?` · +${x.other} TL entr${x.other>1?"ies":"y"}`:""}</span></div><div class="bar"><i style="width:${x.usd/mx*100}%;background:var(--inc)"></i></div></div>`).join("")}
+    ${usdM.length>1?(()=>{const a=usdM[0],b=usdM[usdM.length-1];const du=(b.usd/a.usd-1)*100,dt=(b.tlUsd/a.tlUsd-1)*100;return `<div class="note num" style="margin-top:8px">${monthLabel(a.m)} → ${monthLabel(b.m)}: <b>${pct(du)}</b> in USD vs <b>${pct(dt)}</b> in TL. The gap is the exchange rate, not a raise.</div>`})():`<div class="note" style="margin-top:8px">Enter salary in USD each month to see your real raise, separate from the exchange rate.</div>`}</section>`;
+  } else {
+    h+=`<section class="card"><h2>Income in USD</h2><div class="note">Paid in dollars? Add income with the USD button in the form. This card then shows your income in USD, so a weaker lira doesn't look like a raise.</div></section>`;
+  }
   const a3=catAverages(3),a6=catAverages(6),a12=catAverages(12);
   h+=`<section class="card"><h2>Average monthly spending <small>full months</small></h2><table class="avg num"><tr><th>Category</th><th>3 mo</th><th>6 mo</th><th>12 mo</th></tr>`;
   SET.expenseCats.forEach(c=>{h+=`<tr><td><span class="dot" style="background:${catColor(c)};display:inline-block;margin-right:6px"></span>${esc(c)}</td><td>${tlShort(a3.cats[c]||0)}</td><td>${tlShort(a6.cats[c]||0)}</td><td>${tlShort(a12.cats[c]||0)}</td></tr>`});
@@ -576,7 +585,7 @@ function renderSettings(){
     const tn={expense:"Gider",income:"Gelir",invest_out:"Yatırıma aktarım",invest_in:"Yatırımdan dönüş",lend_out:"Borç verme",lend_in:"Borç tahsilatı"};
     const q=v=>{v=String(v==null?"":v);return /[;"\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
     const rows=[["Tarih","İşlem türü","Kategori","Açıklama","Tutar (TL)","Hesap / ödeme","Not"]];
-    TX.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>rows.push([t.date,tn[t.type]||t.type,t.category,t.desc||"",String(t.amount).replace(".",","),t.account||"",t.note||""]));
+    TX.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>rows.push([t.date,tn[t.type]||t.type,t.category,t.desc||"",String(t.amount).replace(".",","),t.account||"",curNote(t)]));
     saveFile(`islemler-${todayStr()}.csv`,"\ufeff"+rows.map(r=>r.map(q).join(";")).join("\r\n"),"text/csv");
   };
   document.getElementById("copyAll").onclick=async()=>{
@@ -596,6 +605,7 @@ async function saveFile(name,text,type){
   }catch(e){if(e&&e.name==="AbortError")return false}
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000);toast("Downloaded "+name);return true;
 }
+function curNote(t){const o=t.origCur?String(t.origAmount).replace(".",",")+" "+t.origCur:"";if(!o)return t.note||"";return t.note&&t.note.includes(t.origCur)?t.note:(t.note?t.note+" · "+o:o)}
 function lastBackupText(){let d=null;try{d=localStorage.getItem(KEY+":lastBackup")}catch(e){}return d?"last: "+d:"never backed up"}
 function backupDue(){let d=null;try{d=localStorage.getItem(KEY+":lastBackup")}catch(e){}return TX.length>0&&(!d||daysAgo(d)>30)}
 function showConfirm(msg,okLabel,onOk){
@@ -642,7 +652,10 @@ function parseWorkbook(buf){
       t="lend_out";c="Borç";note=desc;desc=(desc.split(/\s+/)[0]||desc);out.lent++;
     }
     if(t.startsWith("invest"))c="Yatırım";
-    out.tx["tx/xl"+String(rowNo).padStart(4,"0")]={date,type:t,category:c,desc,amount:Math.round(amt*100)/100,account:acc,note,createdAt:Date.parse(date)||Date.now(),updatedAt:Date.now(),source:"excel"};
+    const fx={};const mm=note.match(/^\s*([\d.,]+)\s*(USD|EUR|GBP|\$|€|£)\s*$/i)||note.match(/^\s*(USD|EUR|GBP|\$|€|£)\s*([\d.,]+)\s*$/i);
+    if(mm){const num=/\d/.test(mm[1])?mm[1]:mm[2],cc=(/\d/.test(mm[1])?mm[2]:mm[1]).toUpperCase().replace("$","USD").replace("€","EUR").replace("£","GBP");
+      const o=/^\d+\.\d{1,2}$/.test(num)?parseFloat(num):parseAmt(num);if(o>0){fx.origAmount=o;fx.origCur=cc;fx.fxRate=Math.round(amt/o*10000)/10000}}
+    out.tx["tx/xl"+String(rowNo).padStart(4,"0")]={date,type:t,category:c,desc,amount:Math.round(amt*100)/100,account:acc,note,createdAt:Date.parse(date)||Date.now(),updatedAt:Date.now(),source:"excel",...fx};
   }
   const wy=find("YATIRIM");
   if(wy){
@@ -695,9 +708,27 @@ const scrim=document.getElementById("scrim"), sheet=document.getElementById("she
 function openForm(tx){
   if(readOnly){toast("This view is read-only");return}
   delArmed=false;
-  form=tx?Object.assign({},tx,{amountStr:nf2.format(tx.amount).replace(/,00$/,"")}):{type:"expense",category:"",desc:"",amountStr:"",account:SET.accounts[0]||"",date:defaultDate(),note:""};
+  const n2=v=>nf2.format(+v||0).replace(/,00$/,"");
+  if(tx){
+    form=Object.assign({},tx,{cur:tx.origCur||"TL",amountStr:tx.origCur?n2(tx.origAmount):n2(tx.amount),rateStr:tx.origCur?n2(tx.fxRate):""});
+  }else{
+    form={type:"expense",category:"",desc:"",amountStr:"",account:SET.accounts[0]||"",date:defaultDate(),note:"",cur:"TL",rateStr:""};
+    applyCurDefault(form);
+  }
   drawForm();sheetOpen();
   if(!tx)setTimeout(()=>{const a=document.getElementById("fAmt");a&&a.focus()},80);
+}
+const CUR_SYM2={TL:"₺",USD:"$",EUR:"€",GBP:"£"};
+function applyCurDefault(f){
+  // new entries start in the currency of your latest entry of the same type (e.g. salary in USD)
+  const last=TX.filter(t=>t.type===f.type).sort(txSort)[0];
+  f.cur=last&&last.origCur?last.origCur:"TL";
+  f.rateStr=f.cur!=="TL"&&FX[f.cur]?nf2.format(FX[f.cur]).replace(/,00$/,""):"";
+}
+function convText(f){
+  if(f.cur==="TL")return "";
+  const a=parseAmt(f.amountStr),r=parseAmt(f.rateStr);
+  return a>0&&r>0?"= "+tl(Math.round(a*r*100)/100,true):"= ₺ …";
 }
 function defaultDate(){return S.month===ym(new Date())?todayStr():S.month+"-01"}
 function catsFor(type){return type==="income"?SET.incomeCats:type==="expense"?SET.expenseCats:type.startsWith("lend")?["Borç"]:["Yatırım"]}
@@ -709,7 +740,9 @@ function drawForm(){
   const isLend=f.type.startsWith("lend");
   sheet.innerHTML=`<div class="grab"></div>
   <div class="seg">${Object.entries(TYPES).map(([k,v])=>`<button data-t="${k}" class="${f.type===k?"on":""}">${v.label}</button>`).join("")}</div>
-  <div class="amtin"><span>₺</span><input id="fAmt" class="num" inputmode="decimal" placeholder="0" value="${esc(f.amountStr)}" autocomplete="off"></div>
+  <div style="display:flex;gap:6px;margin-bottom:4px">${["TL","USD","EUR","GBP"].map(c=>`<button class="pill" data-cur2="${c}" style="border:1px solid ${f.cur===c?"var(--acc)":"var(--line)"};background:${f.cur===c?"var(--acc-soft)":"var(--bg)"};color:${f.cur===c?"var(--acc)":"var(--mut)"};font-weight:${f.cur===c?700:500};padding:5px 12px;font-size:13px">${c}</button>`).join("")}</div>
+  <div class="amtin"><span>${CUR_SYM2[f.cur]}</span><input id="fAmt" class="num" inputmode="decimal" placeholder="0" value="${esc(f.amountStr)}" autocomplete="off"></div>
+  ${f.cur!=="TL"?`<div class="row2" style="align-items:end;margin:-6px 0 6px"><div><div class="fl" style="margin-top:0">${f.cur}/TL rate${FX.auto&&FX.date===todayStr()?" · today":FX.date?" · from "+esc(FX.date):""}</div><input class="inp num" id="fRate" inputmode="decimal" data-dec="4" value="${esc(f.rateStr)}" placeholder="e.g. 50"></div><div id="fConv" class="num" style="font-weight:700;font-size:18px;padding-bottom:10px;text-align:right">${convText(f)}</div></div>`:""}
   <div class="fl">Category</div>
   <div class="chips" id="fCats">${cats.map(c=>`<button data-c="${esc(c)}" class="${f.category===c?"on":""}"><span class="dot" style="background:${catColor(c)}"></span>${esc(c)}</button>`).join("")}</div>
   <div class="fl">${isLend?(f.type==="lend_out"?"Who did you lend to?":"Who paid you back?"):"Description"}</div>
@@ -728,8 +761,11 @@ function drawForm(){
   </div>
   ${f.id?`<button class="btn" id="fCancel" style="width:100%;background:none;color:var(--mut);margin-top:4px">Cancel</button>`:""}`;
   fmtInputs(sheet);
-  const sync=()=>{f.amountStr=val("fAmt");f.desc=val("fDesc");f.date=val("fDate");f.account=val("fAcc");f.note=val("fNote")};
-  sheet.querySelectorAll("[data-t]").forEach(b=>b.onclick=()=>{sync();f.type=b.dataset.t;if(!catsFor(f.type).includes(f.category))f.category=fixedCat(f.type);drawForm()});
+  const sync=()=>{f.amountStr=val("fAmt");if(document.getElementById("fRate"))f.rateStr=val("fRate");f.desc=val("fDesc");f.date=val("fDate");f.account=val("fAcc");f.note=val("fNote")};
+  sheet.querySelectorAll("[data-t]").forEach(b=>b.onclick=()=>{sync();f.type=b.dataset.t;if(!catsFor(f.type).includes(f.category))f.category=fixedCat(f.type);if(!f.id&&!f.amountStr)applyCurDefault(f);drawForm()});
+  sheet.querySelectorAll("[data-cur2]").forEach(b=>b.onclick=()=>{sync();f.cur=b.dataset.cur2;f.rateStr=f.cur!=="TL"&&FX[f.cur]?nf2.format(FX[f.cur]).replace(/,00$/,""):"";drawForm();const a=document.getElementById("fAmt");a&&a.focus()});
+  const upConv=()=>{const c=document.getElementById("fConv");if(c){f.amountStr=val("fAmt");f.rateStr=val("fRate");c.textContent=convText(f)}};
+  document.getElementById("fAmt").addEventListener("input",upConv);const fr=document.getElementById("fRate");if(fr)fr.addEventListener("input",upConv);
   sheet.querySelectorAll("[data-pp]").forEach(b=>b.onclick=()=>{document.getElementById("fDesc").value=b.dataset.pp;const a=document.getElementById("fAmt");if(!a.value)a.value=nf2.format(+b.dataset.amt).replace(/,00$/,"")});
   sheet.querySelectorAll("[data-c]").forEach(b=>b.onclick=()=>{f.category=b.dataset.c;sheet.querySelectorAll("[data-c]").forEach(x=>x.classList.toggle("on",x===b))});
   document.getElementById("fSave").onclick=()=>{sync();saveTx()};
@@ -747,12 +783,16 @@ function val(id){const e=document.getElementById(id);return e?e.value:""}
 function closeForm(){sheetClose()}
 scrim.addEventListener("click",e=>{if(e.target===scrim)sheetClose()});
 async function saveTx(){
-  const f=form, amt=parseAmt(f.amountStr);
-  if(!(amt>0)){toast("Enter an amount above zero");document.getElementById("fAmt").focus();return}
+  const f=form, raw=parseAmt(f.amountStr), rate=f.cur==="TL"?1:parseAmt(f.rateStr);
+  if(!(raw>0)){toast("Enter an amount above zero");document.getElementById("fAmt").focus();return}
+  if(!(rate>0)){toast("Enter the "+f.cur+"/TL rate");document.getElementById("fRate").focus();return}
+  const amt=Math.round(raw*rate*100)/100;
   if(!f.category){toast("Pick a category");return}
   if(f.type.startsWith("lend")&&!(f.desc||"").trim()){toast("Enter the person's name");return}
   if(!/^\d{4}-\d{2}-\d{2}$/.test(f.date)){toast("Pick a date");return}
   const body={date:f.date,type:f.type,category:f.category,desc:(f.desc||"").trim(),amount:Math.round(amt*100)/100,account:f.account||"",note:(f.note||"").trim(),createdAt:f.createdAt||Date.now(),updatedAt:Date.now()};
+  if(f.cur!=="TL"){body.origAmount=Math.round(raw*100)/100;body.origCur=f.cur;body.fxRate=rate}
+  if(f.source)body.source=f.source;
   const btn=document.getElementById("fSave");btn.disabled=true;
   try{
     const ref=f.id?db.collection("tx").doc(f.id):db.collection("tx").doc();
@@ -771,6 +811,41 @@ function handleErr(e){
   else toast("Couldn't save: "+((e&&e.message)||"unknown error"));
 }
 
+
+
+/* ---------- automatic exchange rates (when online; manual entry still works offline) ---------- */
+const FX_SOURCES=[
+  {url:"https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.min.json",pick:j=>j&&j.usd&&{TRY:j.usd.try,EUR:j.usd.eur,GBP:j.usd.gbp}},
+  {url:"https://latest.currency-api.pages.dev/v1/currencies/usd.min.json",pick:j=>j&&j.usd&&{TRY:j.usd.try,EUR:j.usd.eur,GBP:j.usd.gbp}},
+  {url:"https://open.er-api.com/v6/latest/USD",pick:j=>j&&j.result==="success"&&j.rates&&{TRY:j.rates.TRY,EUR:j.rates.EUR,GBP:j.rates.GBP}}
+];
+let fxBusy=false;
+async function fetchFx(manual){
+  if(fxBusy)return false;
+  if(navigator.onLine===false){if(manual)toast("No internet. Enter the rates by hand.");return false}
+  fxBusy=true;
+  try{
+    for(const src of FX_SOURCES){
+      try{
+        const ctl=new AbortController(),tm=setTimeout(()=>ctl.abort(),8000);
+        const r=await fetch(src.url,{signal:ctl.signal,cache:"no-store"});clearTimeout(tm);
+        if(!r.ok)continue;
+        const q=src.pick(await r.json());
+        if(!q||!(q.TRY>1)||!(q.EUR>0)||!(q.GBP>0))continue;
+        const r4=x=>Math.round(x*10000)/10000;
+        const next={USD:r4(q.TRY),EUR:r4(q.TRY/q.EUR),GBP:r4(q.TRY/q.GBP),date:todayStr(),auto:true,fetchedAt:Date.now()};
+        await db.doc("settings/fx").set(next);FX=next;
+        if(manual)toast("Rates updated: USD "+nf2.format(next.USD));
+        return true;
+      }catch(e){}
+    }
+    if(manual)toast("Couldn't reach the rate service. Enter the rates by hand.");
+    return false;
+  }finally{fxBusy=false}
+}
+function fxAutoDue(){return !FX.fetchedAt||Date.now()-FX.fetchedAt>6*3600*1000}
+window.addEventListener("online",()=>{if(db&&fxAutoDue())fetchFx(false)});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&db&&fxAutoDue())fetchFx(false)});
 
 /* ---------- investments ---------- */
 const CUR_SYM={TL:"₺",USD:"$",EUR:"€",GBP:"£"};
@@ -824,9 +899,10 @@ function renderInvest(){
   }
 
   // fx
-  h+=`<section class="card"><h2>Exchange rates <small>${FX.date?"as of "+esc(FX.date):"not set"}</small></h2>
+  h+=`<section class="card"><h2>Exchange rates <small>${FX.date?(FX.auto?"auto · ":"manual · ")+esc(FX.date):"not set"}</small></h2>
     <div class="fxrow">${["USD","EUR","GBP"].map(c=>`<label>${c} / TL<input class="inp num" inputmode="decimal" data-fx="${c}" data-dec="4" value="${FX[c]?String(FX[c]).replace(".",","):""}" placeholder="–"></label>`).join("")}</div>
-    <button class="btn ghost" id="saveFx" style="width:100%;margin-top:10px;font-size:14px">Save rates</button></section>`;
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn pri" id="autoFx" style="flex:1;font-size:14px;padding:11px">Update from internet</button><button class="btn ghost" id="saveFx" style="flex:1;font-size:14px;padding:11px">Save typed rates</button></div>
+    <div class="note" style="margin-top:8px">Rates refresh by themselves when the app opens with internet. They are market mid rates, updated once a day: your bank's rate will differ a little. Offline, type them and save.</div></section>`;
 
   // holdings
   h+=`<h2 style="margin:16px 2px 8px">Holdings <small><a href="#" id="pmode" style="color:var(--acc);text-decoration:none;font-weight:600">${priceMode?"Cancel":"Update prices"}</a></small></h2>`;
@@ -850,10 +926,11 @@ function renderInvest(){
   main.querySelectorAll("[data-pid]").forEach(b=>b.onclick=()=>openPosForm(POS.find(p=>p.id===b.dataset.pid)));
   document.getElementById("pmode").onclick=e=>{e.preventDefault();priceMode=!priceMode;renderInvest()};
   document.getElementById("saveFx").onclick=saveFx;
+  document.getElementById("autoFx").onclick=async e=>{e.target.disabled=true;e.target.textContent="Updating…";await fetchFx(true);if(S.view==="invest")renderInvest()};
   const sp=document.getElementById("savePrices");if(sp)sp.onclick=savePrices;
 }
 async function saveFx(){
-  const next={date:todayStr()};
+  const next={date:todayStr(),auto:false,fetchedAt:Date.now()};
   main.querySelectorAll("[data-fx]").forEach(i=>{const v=parseAmt(i.value);next[i.dataset.fx]=v>0?v:null});
   try{await db.doc("settings/fx").set(next);FX=next;toast("Rates saved");renderInvest()}catch(e){handleErr(e)}
 }
@@ -998,7 +1075,8 @@ let timer=0;
   db=LocalDB;
   db.doc("settings/main").onSnapshot(s=>{if(s.exists){SET=Object.assign({},DEFAULTS,s.data())}render()},e=>{});
   db.collection("pos").onSnapshot(s=>{POS=s.docs.map(d=>Object.assign({id:d.id},d.data()));posLoaded=true;if(S.view==="invest"&&!priceMode&&!document.querySelector("#main input:focus"))render()},e=>{posLoaded=true});
-  db.doc("settings/fx").onSnapshot(s=>{if(s.exists)FX=Object.assign({USD:null,EUR:null,GBP:null,date:""},s.data());if(S.view==="invest"&&!document.querySelector("#main input:focus"))render()},e=>{});
+  let fxFirst=true;
+  db.doc("settings/fx").onSnapshot(s=>{if(fxFirst){fxFirst=false;setTimeout(()=>{if(fxAutoDue())fetchFx(false)},300)}if(s.exists)FX=Object.assign({USD:null,EUR:null,GBP:null,date:""},s.data());if(S.view==="invest"&&!document.querySelector("#main input:focus"))render()},e=>{});
   db.collection("tx").onSnapshot(s=>{
     TX=s.docs.map(d=>Object.assign({id:d.id},d.data())).filter(t=>t.date&&t.type);
     txLoaded=true;
